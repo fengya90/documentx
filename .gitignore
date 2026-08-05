@@ -1,0 +1,25 @@
+# Rust
+/backend/target
+**/*.rs.bk
+
+# 配置与密钥（位于仓库根目录，与服务运行时的 CWD 一致）
+/config.toml
+/.env
+
+# 前端
+/frontend/node_modules
+/frontend/dist
+
+# 发布成品（由 scripts/package.sh 生成；内含 key 与运行时数据）
+/release
+
+# Claude Code 本地设置
+/.claude/settings.local.json
+
+# 知识库属于「运行时数据」，可能含内部/敏感文档，默认不入库；仅保留示例。
+# 想版本化某个文档，可显式 `git add -f knowledge/xxx.md`。
+/knowledge/*
+!/knowledge/示例-用户服务.md
+
+# 系统
+.DS_Store

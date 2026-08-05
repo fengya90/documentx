@@ -1,0 +1,27 @@
+# DocumentX 发布配置。所有相对路径都相对于本文件所在目录（release/）。
+# 部署时编辑 [llm] 段填入你的端点即可。
+
+[server]
+host = "0.0.0.0"
+port = 8080
+max_body_mb = 16
+
+[llm]
+base_url = "https://api.openai.com/v1"
+api_key  = "sk-..."            # 生产环境建议用环境变量 LLM_API_KEY 注入，不要写死在文件里
+model    = "gpt-4o-mini"
+# generate_model = "gpt-4o"    # 文档生成可选用更强模型
+temperature = 0.3
+read_timeout_secs = 120
+request_timeout_secs = 240
+max_retries = 4                # 429/5xx/网络抖动的重试次数
+stream_idle_timeout_secs = 120 # 流空闲超时（秒）
+context_window_tokens = 128000 # 模型上下文窗口（按你的模型改）
+max_response_tokens = 4096     # 为回答预留的 token
+enable_compaction = true       # 历史超预算时用 LLM 摘要压缩较早对话
+
+[paths]
+knowledge_dir = "knowledge"    # 知识库目录
+templates_dir = "templates"    # 模板目录
+static_dir    = "web"          # 前端产物
+agents_file   = "AGENTS.md"    # 指导 documentx 行为的指令文件（作为系统提示加载）

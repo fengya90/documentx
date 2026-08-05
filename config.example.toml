@@ -1,0 +1,35 @@
+# 复制为 config.toml 后按需修改；敏感项也可用环境变量覆盖（见 .env.example）。
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# 请求体大小上限（MB）。文档/长文本场景放大，避免被默认限制截断。
+max_body_mb = 16
+
+[llm]
+# OpenAI Chat Completions 兼容端点（自带网关/第三方模型都可）。
+base_url = "https://api.openai.com/v1"
+api_key  = "sk-..."            # 建议用环境变量 LLM_API_KEY，不要提交到仓库
+model    = "gpt-4o-mini"       # 对话默认模型
+# 文档生成可选用更强的模型；不填则复用上面的 model。
+# generate_model = "gpt-4o"
+temperature = 0.3
+# 流式两次数据块之间的空闲超时（秒）。
+read_timeout_secs = 120
+# /generate、/export 等非流式接口的整体超时（秒）。
+request_timeout_secs = 240
+# 失败重试次数（429/5xx/网络抖动，指数退避 + 抖动，尊重 Retry-After）。
+max_retries = 4
+# 流式空闲超时（秒）：两次数据块间超过此值视为断线。
+stream_idle_timeout_secs = 120
+# 模型上下文窗口（token），用于历史裁剪/压缩预算。按你的模型改。
+context_window_tokens = 128000
+# 为回答预留的 token（从窗口扣除得到输入预算上限）。
+max_response_tokens = 4096
+# 历史超预算时是否用 LLM 摘要压缩较早对话（false 则直接丢弃最老的）。
+enable_compaction = true
+
+[paths]
+knowledge_dir = "knowledge"      # 内部文档目录（知识库）
+templates_dir = "templates"      # 对外输出模板目录
+static_dir    = "frontend/dist"  # 前端构建产物
