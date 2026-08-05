@@ -1,29 +1,27 @@
-import { isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { isValidElement, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import xiaowenAvatar from "./assets/xiaowen-avatar.png";
 import {
-  ChatMessage,
   streamChat,
   fetchTemplates,
   fetchKnowledge,
   fetchKnowledgeContent,
+  uploadKnowledge,
   fetchTemplateContent,
   exportContent,
   generateMarkdown,
+  fetchUiConfig,
+  DEFAULT_UI_CONFIG,
 } from "./api";
+import type { ChatMessage, KnowledgeIndex, KnowledgeNode } from "./api";
 import { normalizeDiagramKind, prepareDiagramExport, renderDiagramSvg } from "./diagrams";
 
 type Viewer = { title: string; kind: "知识库" | "模板"; content: string };
 type Theme = "light" | "dark";
 
-const EXAMPLES = [
-  "总结一下知识库里的核心内容",
-  "按对外API文档模板生成一份文档",
-  "列出所有接口及其用途",
-  "解释其中的认证与鉴权流程",
-];
+const EMPTY_KNOWLEDGE: KnowledgeIndex = { sources: [], tree: [] };
 
 /* ---------- 图标（内联 SVG，无依赖） ---------- */
 const Icon = {
@@ -53,6 +51,21 @@ const Icon = {
   ),
   Sparkle: () => (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9l-5.6 1.9L12 16l-1.9-5.1L4.5 9l5.6-1.4Z" /></svg>
+  ),
+  Chevron: ({ open }: { open: boolean }) => (
+    <svg className={open ? "open" : ""} viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m7 5 5 5-5 5" /></svg>
+  ),
+  Folder: ({ open }: { open: boolean }) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill={open ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H9l2 2h7.5A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5Z" /></svg>
+  ),
+  Upload: () => (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5" /><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5" /></svg>
+  ),
+  Menu: () => (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+  ),
+  Close: () => (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
   ),
 };
 
@@ -159,13 +172,92 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
   );
 });
 
+interface KnowledgeTreeProps {
+  nodes: KnowledgeNode[];
+  expanded: ReadonlySet<string>;
+  activePath: string | null;
+  onToggle: (path: string) => void;
+  onOpen: (path: string) => void;
+  depth?: number;
+}
+
+const KnowledgeTree = memo(function KnowledgeTree({
+  nodes,
+  expanded,
+  activePath,
+  onToggle,
+  onOpen,
+  depth = 0,
+}: KnowledgeTreeProps) {
+  return (
+    <ul className={`knowledge-tree${depth > 0 ? " nested" : ""}`} role={depth === 0 ? "tree" : "group"}>
+      {nodes.map((node) => {
+        const paddingInlineStart = `${8 + depth * 14}px`;
+        if (node.type === "directory") {
+          const open = expanded.has(node.path);
+          return (
+            <li key={node.path} role="treeitem" aria-expanded={open}>
+              <button
+                type="button"
+                className="tree-row directory"
+                style={{ paddingInlineStart }}
+                title={node.path}
+                aria-label={`${open ? "收起" : "展开"}目录 ${node.path}`}
+                onClick={() => onToggle(node.path)}
+              >
+                <span className="tree-chevron"><Icon.Chevron open={open} /></span>
+                <Icon.Folder open={open} />
+                <span className="tree-label">{node.name}</span>
+                <span className="tree-count">{node.count}</span>
+              </button>
+              {open && (
+                <KnowledgeTree
+                  nodes={node.children}
+                  expanded={expanded}
+                  activePath={activePath}
+                  onToggle={onToggle}
+                  onOpen={onOpen}
+                  depth={depth + 1}
+                />
+              )}
+            </li>
+          );
+        }
+        const active = activePath === node.path;
+        return (
+          <li key={node.path} role="treeitem" aria-current={active ? "page" : undefined}>
+            <button
+              type="button"
+              className={`tree-row file${active ? " active" : ""}`}
+              style={{ paddingInlineStart }}
+              title={`查看 ${node.path}`}
+              onClick={() => onOpen(node.path)}
+            >
+              <span className="tree-chevron placeholder" />
+              <Icon.Doc />
+              <span className="tree-label">{node.name}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+});
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [useKnowledge, setUseKnowledge] = useState(true);
   const [templates, setTemplates] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>([]);
+  const [knowledge, setKnowledge] = useState<KnowledgeIndex>(EMPTY_KNOWLEDGE);
+  const [uiConfig, setUiConfig] = useState(DEFAULT_UI_CONFIG);
+  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadDirectory, setUploadDirectory] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadingKnowledge, setUploadingKnowledge] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(
     () =>
@@ -188,8 +280,39 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    fetchTemplates().then(setTemplates);
-    fetchKnowledge().then(setSources);
+    let active = true;
+    fetchTemplates()
+      .then((items) => {
+        if (active) setTemplates(items);
+      })
+      .catch(() => {
+        if (active) setTemplates([]);
+      });
+    fetchUiConfig()
+      .then((value) => {
+        if (active) setUiConfig(value);
+      })
+      .catch(() => {
+        if (active) setUiConfig(DEFAULT_UI_CONFIG);
+      });
+    fetchKnowledge()
+      .then((index) => {
+        if (!active) return;
+        setKnowledge(index);
+        setExpandedDirectories(
+          new Set(
+            index.tree
+              .filter((node) => node.type === "directory")
+              .map((node) => node.path)
+          )
+        );
+      })
+      .catch(() => {
+        if (active) setKnowledge(EMPTY_KNOWLEDGE);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -213,24 +336,68 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setViewer(null);
+      if (e.key === "Escape") {
+        setViewer(null);
+        setUploadOpen(false);
+        setSidebarOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const flash = (msg: string) => {
+  const flash = useCallback((msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(null), 3500);
-  };
+  }, []);
 
-  async function openKnowledge(source: string) {
+  const toggleKnowledgeDirectory = useCallback((path: string) => {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const openKnowledge = useCallback(async (source: string) => {
     try {
       const content = await fetchKnowledgeContent(source);
       setViewerRaw(false);
       setViewer({ title: source, kind: "知识库", content });
+      setSidebarOpen(false);
     } catch (e: any) {
       flash(`打开失败：${e.message ?? e}`);
+    }
+  }, [flash]);
+
+  async function submitKnowledgeUpload() {
+    if (uploadFiles.length === 0 || uploadingKnowledge) return;
+    setUploadingKnowledge(true);
+    try {
+      const result = await uploadKnowledge(uploadFiles, uploadDirectory);
+      const index = await fetchKnowledge();
+      setKnowledge(index);
+      const directory = uploadDirectory.trim().replace(/^\/+|\/+$/g, "");
+      if (directory) {
+        const parts = directory.split("/");
+        setExpandedDirectories((current) => {
+          const next = new Set(current);
+          for (let i = 1; i <= parts.length; i += 1) next.add(parts.slice(0, i).join("/"));
+          return next;
+        });
+      }
+      setUploadOpen(false);
+      setUploadFiles([]);
+      setUploadDirectory("");
+      const overwriteText = result.overwritten.length > 0
+        ? `，覆盖 ${result.overwritten.length} 个同名文件`
+        : "";
+      flash(`已上传 ${result.uploaded.length} 个知识文件${overwriteText}`);
+    } catch (error: any) {
+      flash(`上传失败：${error?.message ?? error}`);
+    } finally {
+      setUploadingKnowledge(false);
     }
   }
 
@@ -239,6 +406,7 @@ export default function App() {
       const content = await fetchTemplateContent(name);
       setViewerRaw(false);
       setViewer({ title: name, kind: "模板", content });
+      setSidebarOpen(false);
     } catch (e: any) {
       flash(`打开失败：${e.message ?? e}`);
     }
@@ -307,6 +475,7 @@ export default function App() {
   function newChat() {
     if (busy) stop();
     setMessages([]);
+    setSidebarOpen(false);
     inputRef.current?.focus();
   }
 
@@ -372,15 +541,32 @@ export default function App() {
 
   return (
     <div className="app">
+      <button
+        type="button"
+        className="mobile-menu-btn"
+        aria-label="打开导航"
+        aria-expanded={sidebarOpen}
+        onClick={() => setSidebarOpen(true)}
+      >
+        <Icon.Menu />
+      </button>
+      {sidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-backdrop"
+          aria-label="关闭导航"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       {/* ---------- 侧栏 ---------- */}
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarOpen ? " mobile-open" : ""}`}>
         <div className="brand">
           <span className="logo">
             <AssistantAvatar size={38} />
           </span>
           <div className="brand-txt">
-            <h1>DocumentX</h1>
-            <p>文档智能体 · 小文</p>
+            <h1>{uiConfig.brand_title}</h1>
+            <p>{uiConfig.brand_subtitle}</p>
           </div>
           <button
             className="icon-btn theme-toggle"
@@ -389,13 +575,27 @@ export default function App() {
           >
             {theme === "dark" ? <Icon.Sun /> : <Icon.Moon />}
           </button>
+          <button
+            type="button"
+            className="icon-btn sidebar-close"
+            aria-label="关闭导航"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <Icon.Close />
+          </button>
         </div>
 
         <button className="btn primary block" onClick={newChat}>
           <Icon.Plus /> 新对话
         </button>
 
-        <button className={`btn block ${genOpen ? "active" : ""}`} onClick={() => setGenOpen((v) => !v)}>
+        <button
+          className={`btn block ${genOpen ? "active" : ""}`}
+          onClick={() => {
+            setGenOpen((value) => !value);
+            setSidebarOpen(false);
+          }}
+        >
           <Icon.Doc /> 按模板生成文档
         </button>
 
@@ -406,16 +606,30 @@ export default function App() {
         </label>
 
         <section className="panel scroll">
-          <h2>知识库 <span className="count">{sources.length}</span></h2>
-          <ul className="list">
-            {sources.length === 0 && <li className="muted">knowledge/ 为空</li>}
-            {sources.map((s) => (
-              <li key={s} title={`查看 ${s}`} onClick={() => openKnowledge(s)}>
-                <Icon.Doc />
-                <span className="ellip">{s}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="panel-title-row">
+            <h2>知识库 <span className="count">{knowledge.sources.length}</span></h2>
+            <button
+              type="button"
+              className="panel-action"
+              onClick={() => {
+                setUploadOpen(true);
+                setSidebarOpen(false);
+              }}
+            >
+              <Icon.Upload /> 上传
+            </button>
+          </div>
+          {knowledge.tree.length === 0 ? (
+            <div className="tree-empty">knowledge/ 为空</div>
+          ) : (
+            <KnowledgeTree
+              nodes={knowledge.tree}
+              expanded={expandedDirectories}
+              activePath={viewer?.kind === "知识库" ? viewer.title : null}
+              onToggle={toggleKnowledgeDirectory}
+              onOpen={openKnowledge}
+            />
+          )}
         </section>
 
         <section className="panel scroll">
@@ -473,11 +687,11 @@ export default function App() {
             {messages.length === 0 ? (
               <div className="empty">
                 <div className="empty-badge"><AssistantAvatar size={84} /></div>
-                <h2>嗨，我是小文 👋</h2>
-                <p>DocumentX 的文档助手。我会基于你的知识库回答，也能按模板产出可下载的 PDF / Word / Markdown。</p>
+                <h2>{uiConfig.welcome_title}</h2>
+                <p>{uiConfig.welcome_description}</p>
                 <div className="chips">
-                  {EXAMPLES.map((ex) => (
-                    <button key={ex} className="chip" onClick={() => send(ex)}>{ex}</button>
+                  {uiConfig.suggestions.map((ex, index) => (
+                    <button key={`${index}-${ex}`} className="chip" onClick={() => send(ex)}>{ex}</button>
                   ))}
                 </div>
               </div>
@@ -587,6 +801,67 @@ export default function App() {
                   <MarkdownContent content={viewer.content} />
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uploadOpen && (
+        <div className="modal-backdrop" onClick={() => setUploadOpen(false)}>
+          <div className="modal upload-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">
+                <span className="tag">知识库</span>
+                <span>上传文件</span>
+              </div>
+              <button className="btn small" onClick={() => setUploadOpen(false)} disabled={uploadingKnowledge}>
+                关闭
+              </button>
+            </div>
+            <div className="modal-body upload-body">
+              <label className="upload-field">
+                <span>目标目录</span>
+                <input
+                  className="field"
+                  value={uploadDirectory}
+                  onChange={(event) => setUploadDirectory(event.target.value)}
+                  placeholder="留空上传到知识库根目录，例如：业务服务/WorkBuddy"
+                  disabled={uploadingKnowledge}
+                />
+              </label>
+              <label className="file-picker">
+                <Icon.Upload />
+                <strong>{uploadFiles.length > 0 ? `已选择 ${uploadFiles.length} 个文件` : "选择知识文件"}</strong>
+                <span>支持 UTF-8 编码的 .md、.markdown、.txt，可多选</span>
+                <input
+                  type="file"
+                  accept=".md,.markdown,.txt,text/markdown,text/plain"
+                  multiple
+                  disabled={uploadingKnowledge}
+                  onChange={(event) => setUploadFiles(Array.from(event.target.files ?? []))}
+                />
+              </label>
+              {uploadFiles.length > 0 && (
+                <ul className="upload-file-list">
+                  {uploadFiles.map((file) => (
+                    <li key={`${file.name}-${file.size}-${file.lastModified}`}>
+                      <Icon.Doc />
+                      <span className="ellip" title={file.name}>{file.name}</span>
+                      <small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="upload-actions">
+                <button className="btn" onClick={() => setUploadOpen(false)} disabled={uploadingKnowledge}>取消</button>
+                <button
+                  className="btn primary"
+                  onClick={submitKnowledgeUpload}
+                  disabled={uploadFiles.length === 0 || uploadingKnowledge}
+                >
+                  {uploadingKnowledge ? "上传并加载中…" : "上传并加载"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

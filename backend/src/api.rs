@@ -1,11 +1,11 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
+        IntoResponse, Redirect, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -27,6 +27,7 @@ use tower_http::{
 
 use crate::{
     config::Config,
+    content::{knowledge_upload_path, ContentManager, ContentSnapshot},
     error::AppError,
     knowledge::Retriever,
     llm::{LlmClient, Message, StreamEvent},
@@ -40,29 +41,10 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 当提供了「知识库参考」时，以其为事实依据，不要编造；若参考中没有答案，如实说明。\
 技术文档确有助于理解时，可使用 mermaid、graphviz、vega 或 vegalite fenced code block；不要引用外部 URL 或文件。";
 
-/// 加载指导 documentx 行为的指令文件（如 AGENTS.md）作为系统提示；
-/// 未配置或文件为空则回退到内置默认提示。
-pub fn load_instructions(cfg: &Config) -> String {
-    if let Some(path) = &cfg.paths.agents_file {
-        if std::path::Path::new(path).exists() {
-            if let Ok(s) = std::fs::read_to_string(path) {
-                if !s.trim().is_empty() {
-                    tracing::info!("已加载智能体指令文件：{}", path);
-                    return s;
-                }
-            }
-        }
-        tracing::warn!("指令文件 {} 不存在或为空，使用内置默认提示", path);
-    }
-    DEFAULT_SYSTEM_PROMPT.to_string()
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub llm: Arc<LlmClient>,
-    pub retriever: Arc<dyn Retriever>,
-    pub templates: Arc<Vec<Template>>,
-    pub instructions: Arc<String>,
+    pub content: Arc<ContentManager>,
     pub config: Arc<Config>,
 }
 
@@ -75,10 +57,13 @@ pub fn build_router(state: AppState) -> Router {
     // 非流式路由：套一个整体超时。
     let blocking = Router::new()
         .route("/health", get(health))
+        .route("/ui-config", get(ui_config))
+        .route("/content/status", get(content_status))
         .route("/templates", get(list_templates))
         .route("/templates/content", get(template_content))
         .route("/knowledge", get(list_knowledge))
         .route("/knowledge/content", get(knowledge_content))
+        .route("/knowledge/upload", post(upload_knowledge))
         .route("/generate", post(generate))
         .route("/export", post(export))
         .layer(TimeoutLayer::with_status_code(
@@ -101,14 +86,46 @@ pub fn build_router(state: AppState) -> Router {
         .compress_when(SizeAbove::new(1024).and(NotForContentType::const_new("text/event-stream")));
 
     let index = format!("{}/index.html", cfg.paths.static_dir);
-    let serve_dir = ServeDir::new(&cfg.paths.static_dir).not_found_service(ServeFile::new(index));
+    let application = if cfg.server.base_path.is_empty() {
+        let serve_dir =
+            ServeDir::new(&cfg.paths.static_dir).not_found_service(ServeFile::new(index));
+        Router::new().nest("/api", api).fallback_service(serve_dir)
+    } else {
+        // 不直接 nest 整个站点：axum 0.7 会区分挂载点 `/documentx` 与
+        // `/documentx/`。显式挂载首页、assets 和 API，可让带尾斜杠的页面
+        // 正确加载相对资源，同时避免前缀被当成静态目录的一部分。
+        let base_path = cfg.server.base_path.clone();
+        let landing = format!("{base_path}/");
+        let api_path = format!("{base_path}/api");
+        let assets_path = format!("{base_path}/assets");
+        let assets_dir = format!("{}/assets", cfg.paths.static_dir);
+        let root_landing = landing.clone();
+        let base_landing = landing.clone();
 
-    Router::new()
-        .nest("/api", api)
-        .fallback_service(serve_dir)
-        .layer(compression)
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        Router::new()
+            .route(
+                "/",
+                get(move || {
+                    let target = root_landing.clone();
+                    async move { Redirect::temporary(&target) }
+                }),
+            )
+            .route(
+                &base_path,
+                get(move || {
+                    let target = base_landing.clone();
+                    async move { Redirect::temporary(&target) }
+                }),
+            )
+            .route_service(&landing, ServeFile::new(index))
+            .nest(&api_path, api)
+            .nest_service(&assets_path, ServeDir::new(assets_dir))
+    }
+    .layer(compression)
+    .layer(CorsLayer::permissive())
+    .layer(TraceLayer::new_for_http());
+
+    application
 }
 
 // ---------- 元信息 ----------
@@ -117,13 +134,26 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
+async fn ui_config(State(st): State<AppState>) -> impl IntoResponse {
+    Json(st.config.ui.clone())
+}
+
+async fn content_status(State(st): State<AppState>) -> impl IntoResponse {
+    Json(st.content.status())
+}
+
 async fn list_templates(State(st): State<AppState>) -> impl IntoResponse {
-    let names: Vec<&String> = st.templates.iter().map(|t| &t.name).collect();
+    let snapshot = st.content.snapshot();
+    let names: Vec<&String> = snapshot.templates.iter().map(|t| &t.name).collect();
     Json(json!({ "templates": names }))
 }
 
 async fn list_knowledge(State(st): State<AppState>) -> impl IntoResponse {
-    Json(json!({ "sources": st.retriever.sources() }))
+    let snapshot = st.content.snapshot();
+    Json(json!({
+        "sources": snapshot.retriever.sources(),
+        "tree": snapshot.retriever.tree(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -131,22 +161,76 @@ struct SourceQuery {
     source: String,
 }
 
-/// 只读查看某个知识库文档的原文。以 `sources()` 为白名单，杜绝路径穿越。
+/// 只读查看当前内存快照中的知识库原文；不在请求期间访问本地磁盘或 OSS。
 async fn knowledge_content(
     State(st): State<AppState>,
     Query(q): Query<SourceQuery>,
 ) -> Result<Response, AppError> {
-    if !st.retriever.sources().iter().any(|s| s == &q.source) {
-        return Ok((
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "未找到该文档" })),
-        )
-            .into_response());
-    }
-    let path = std::path::Path::new(&st.config.paths.knowledge_dir).join(&q.source);
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| AppError(anyhow::anyhow!("读取文档失败：{e}")))?;
+    let snapshot = st.content.snapshot();
+    let Some(content) = snapshot.knowledge.get(&q.source) else {
+        return Ok(knowledge_not_found());
+    };
     Ok(Json(json!({ "source": q.source, "content": content })).into_response())
+}
+
+async fn upload_knowledge(
+    State(st): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut directory = String::new();
+    let mut pending = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(AppError::bad_request)?
+    {
+        match field.name() {
+            Some("directory") => {
+                directory = field.text().await.map_err(AppError::bad_request)?;
+            }
+            Some("files") => {
+                let file_name = field
+                    .file_name()
+                    .map(str::to_owned)
+                    .ok_or_else(|| AppError::bad_request(anyhow::anyhow!("上传项缺少文件名")))?;
+                let bytes = field.bytes().await.map_err(AppError::bad_request)?;
+                pending.push((file_name, bytes.to_vec()));
+            }
+            _ => {}
+        }
+    }
+    if pending.is_empty() {
+        return Err(AppError::bad_request(anyhow::anyhow!("请选择知识文件")));
+    }
+
+    let files = pending
+        .into_iter()
+        .map(|(file_name, bytes)| {
+            let path =
+                knowledge_upload_path(&directory, &file_name).map_err(AppError::bad_request)?;
+            if bytes.len() > st.config.content.max_file_kb.saturating_mul(1024) {
+                return Err(AppError::bad_request(anyhow::anyhow!(
+                    "文件 {path} 超过 {} KB 上限",
+                    st.config.content.max_file_kb
+                )));
+            }
+            std::str::from_utf8(&bytes)
+                .map_err(|_| AppError::bad_request(anyhow::anyhow!("文件不是 UTF-8：{path}")))?;
+            Ok((path, bytes))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    let result = st.content.upload_knowledge(files).await?;
+    Ok(Json(json!(result)))
+}
+
+fn knowledge_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "未找到该文档" })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -159,7 +243,8 @@ async fn template_content(
     State(st): State<AppState>,
     Query(q): Query<NameQuery>,
 ) -> Result<Response, AppError> {
-    match templates::find(&st.templates, &q.name) {
+    let snapshot = st.content.snapshot();
+    match templates::find(&snapshot.templates, &q.name) {
         Some(t) => Ok(Json(json!({ "name": t.name, "content": t.content })).into_response()),
         None => Ok((
             StatusCode::NOT_FOUND,
@@ -182,10 +267,10 @@ struct ChatReq {
     use_knowledge: bool,
 }
 
-fn build_system_prompt(st: &AppState, query: &str, use_knowledge: bool) -> String {
-    let mut system = st.instructions.as_ref().clone();
+fn build_system_prompt(snapshot: &ContentSnapshot, query: &str, use_knowledge: bool) -> String {
+    let mut system = snapshot.instructions.clone();
     if use_knowledge && !query.is_empty() {
-        let chunks = st.retriever.retrieve(query, 5);
+        let chunks = snapshot.retriever.retrieve(query, 5);
         if !chunks.is_empty() {
             system.push_str("\n\n# 知识库参考\n");
             for c in chunks {
@@ -198,11 +283,11 @@ fn build_system_prompt(st: &AppState, query: &str, use_knowledge: bool) -> Strin
 
 /// 让对话也知道有哪些输出模板：始终列出模板名；若用户消息里提到了某个模板
 /// （或提到“模板/模版”且只有一个模板），则把该模板全文注入，供模型参照。
-fn append_templates(system: &mut String, st: &AppState, query: &str) {
-    if st.templates.is_empty() {
+fn append_templates(system: &mut String, snapshot: &ContentSnapshot, query: &str) {
+    if snapshot.templates.is_empty() {
         return;
     }
-    let names: Vec<&str> = st.templates.iter().map(|t| t.name.as_str()).collect();
+    let names: Vec<&str> = snapshot.templates.iter().map(|t| t.name.as_str()).collect();
     system.push_str(&format!(
         "\n\n# 可用输出模板\n当用户要求“按某模板”产出文档时，参照对应模板的结构、章节顺序与写作风格来组织内容；\
 模板只是格式参考，事实仍以知识库为准。当前可用模板：{}。\n",
@@ -210,17 +295,17 @@ fn append_templates(system: &mut String, st: &AppState, query: &str) {
     ));
 
     let q = normalize(query);
-    let mut injected: Vec<&Template> = st
+    let mut injected: Vec<&Template> = snapshot
         .templates
         .iter()
         .filter(|t| q.contains(&normalize(&t.name)))
         .collect();
     // 未精确命中，但用户提到“模板/模版”，且只有一个模板时，默认注入它。
     if injected.is_empty()
-        && st.templates.len() == 1
+        && snapshot.templates.len() == 1
         && (query.contains("模板") || query.contains("模版"))
     {
-        injected.push(&st.templates[0]);
+        injected.push(&snapshot.templates[0]);
     }
     for t in injected {
         system.push_str(&format!("\n## 模板：{}\n{}\n", t.name, t.content));
@@ -247,8 +332,10 @@ async fn chat(
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
-    let mut system = build_system_prompt(&st, &last_user, req.use_knowledge);
-    append_templates(&mut system, &st, &last_user);
+    // 一个请求只绑定一代内容，避免定时刷新时混用新旧 AGENTS/知识库/模板。
+    let snapshot = st.content.snapshot();
+    let mut system = build_system_prompt(&snapshot, &last_user, req.use_knowledge);
+    append_templates(&mut system, &snapshot, &last_user);
 
     // 上下文管理：按 token 预算裁剪/压缩历史，避免撑爆窗口。
     let (history, notice) = prepare_history(&st, &system, req.messages).await;
@@ -411,10 +498,11 @@ async fn generate(
     State(st): State<AppState>,
     Json(req): Json<GenerateReq>,
 ) -> Result<Response, AppError> {
-    let mut system = build_system_prompt(&st, &req.instruction, req.use_knowledge);
+    let snapshot = st.content.snapshot();
+    let mut system = build_system_prompt(&snapshot, &req.instruction, req.use_knowledge);
 
     if let Some(name) = &req.template {
-        match templates::find(&st.templates, name) {
+        match templates::find(&snapshot.templates, name) {
             Some(t) => {
                 system.push_str(
                     "\n\n# 输出模板（参考其结构、章节与风格来组织你的文档；这是格式参考，不是事实来源）\n",
@@ -422,7 +510,7 @@ async fn generate(
                 system.push_str(&t.content);
             }
             None => {
-                return Err(AppError(anyhow::anyhow!("未找到模板：{name}")));
+                return Err(anyhow::anyhow!("未找到模板：{name}").into());
             }
         }
     }

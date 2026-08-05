@@ -1,0 +1,13 @@
+.git
+.gitignore
+.claude
+.env
+config.toml
+release
+backend/target
+frontend/node_modules
+frontend/dist
+frontend/frontend
+knowledge
+templates
+.DS_Store

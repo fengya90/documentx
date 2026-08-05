@@ -40,7 +40,13 @@ cp -R frontend/dist "$REL/web"
 
 # 首次播种（存在则保留用户的修改）
 seed_file() {  # $1=src  $2=dst
-  if [ -e "$2" ]; then echo "    保留已存在: ${2#$REL/}"; else cp "$1" "$2"; echo "    播种: ${2#$REL/}"; fi
+  if [ -e "$2" ]; then
+    echo "    保留已存在: ${2#$REL/}"
+  else
+    mkdir -p "$(dirname "$2")"
+    cp "$1" "$2"
+    echo "    播种: ${2#$REL/}"
+  fi
 }
 seed_dir() {   # $1=src  $2=dst
   if [ -d "$2" ]; then echo "    保留已存在: ${2#$REL/}/"; else cp -R "$1" "$2"; echo "    播种: ${2#$REL/}/"; fi
@@ -49,7 +55,7 @@ seed_dir() {   # $1=src  $2=dst
 seed_file deploy/config.release.toml "$REL/config.toml"
 seed_file deploy/AGENTS.md           "$REL/AGENTS.md"
 seed_dir  knowledge                  "$REL/knowledge"
-seed_file knowledge/documentx_diagram_guide.md "$REL/knowledge/documentx_diagram_guide.md"
+seed_file knowledge/DocumentX/documentx_diagram_guide.md "$REL/knowledge/DocumentX/documentx_diagram_guide.md"
 seed_dir  templates                  "$REL/templates"
 
 echo "==> 4/4 完成"
@@ -60,4 +66,4 @@ echo "  目录结构："
 echo
 echo "运行方式（首次先编辑 release/config.toml 填入 LLM 端点）："
 echo "    cd release && ./documentx"
-echo "  然后打开 http://localhost:8080"
+echo "  然后打开 http://localhost:8080/documentx/"

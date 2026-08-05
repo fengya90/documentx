@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod content;
 mod error;
 mod knowledge;
 mod llm;
@@ -12,11 +13,10 @@ use anyhow::Context;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{build_router, load_instructions, AppState},
+    api::{build_router, AppState, DEFAULT_SYSTEM_PROMPT},
     config::Config,
-    knowledge::{KeywordRetriever, Retriever},
+    content::ContentManager,
     llm::LlmClient,
-    templates::load_templates,
 };
 
 #[tokio::main]
@@ -33,16 +33,12 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load("config.toml")?;
 
     let llm = LlmClient::new(&config)?;
-    let retriever: Arc<dyn Retriever> =
-        Arc::new(KeywordRetriever::load(&config.paths.knowledge_dir)?);
-    let templates = load_templates(&config.paths.templates_dir)?;
-    let instructions = load_instructions(&config);
+    let content = ContentManager::initialize(&config, DEFAULT_SYSTEM_PROMPT).await?;
+    content.spawn_refresh_task();
 
     let state = AppState {
         llm: Arc::new(llm),
-        retriever,
-        templates: Arc::new(templates),
-        instructions: Arc::new(instructions),
+        content,
         config: Arc::new(config.clone()),
     };
 
