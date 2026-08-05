@@ -1,5 +1,13 @@
 import type { DiagramAsset } from "./diagrams";
 
+// 页面入口始终由后端规范到带 `/` 的应用根路径，因此相对 URL 同时兼容
+// `/` 与 `/documentx/`，无需把部署路径编译进前端产物。
+const pageBase = new URL("./", window.location.href);
+
+function apiUrl(path: string): string {
+  return new URL(`api/${path.replace(/^\/+/, "")}`, pageBase).toString();
+}
+
 export type Role = "user" | "assistant";
 
 export interface ChatMessage {
@@ -14,6 +22,54 @@ export interface Usage {
   total_tokens: number;
 }
 
+export type KnowledgeNode =
+  | {
+      type: "directory";
+      name: string;
+      path: string;
+      count: number;
+      children: KnowledgeNode[];
+    }
+  | {
+      type: "file";
+      name: string;
+      path: string;
+    };
+
+export interface KnowledgeIndex {
+  sources: string[];
+  tree: KnowledgeNode[];
+}
+
+export interface KnowledgeUploadResult {
+  uploaded: string[];
+  overwritten: string[];
+  generation: number;
+  knowledge_count: number;
+}
+
+export interface UiConfig {
+  brand_title: string;
+  brand_subtitle: string;
+  welcome_title: string;
+  welcome_description: string;
+  suggestions: string[];
+}
+
+export const DEFAULT_UI_CONFIG: UiConfig = {
+  brand_title: "DocumentX",
+  brand_subtitle: "文档智能体 · 小文",
+  welcome_title: "嗨，我是小文 👋",
+  welcome_description:
+    "DocumentX 的文档助手。我会基于你的知识库回答，也能按模板产出可下载的 PDF / Word / Markdown。",
+  suggestions: [
+    "总结一下知识库里的核心内容",
+    "按对外API文档模板生成一份文档",
+    "列出所有接口及其用途",
+    "解释其中的认证与鉴权流程",
+  ],
+};
+
 export interface ChatOptions {
   messages: ChatMessage[];
   useKnowledge: boolean;
@@ -26,7 +82,7 @@ export interface ChatOptions {
 
 /** 流式对话：读取 SSE，逐段回调 delta。 */
 export async function streamChat(opts: ChatOptions): Promise<void> {
-  const resp = await fetch("/api/chat", {
+  const resp = await fetch(apiUrl("chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -97,22 +153,67 @@ function handleEvent(rawEvent: string, opts: ChatOptions) {
 }
 
 export async function fetchTemplates(): Promise<string[]> {
-  const r = await fetch("/api/templates");
+  const r = await fetch(apiUrl("templates"));
   if (!r.ok) return [];
   const j = await r.json();
   return j.templates ?? [];
 }
 
-export async function fetchKnowledge(): Promise<string[]> {
-  const r = await fetch("/api/knowledge");
-  if (!r.ok) return [];
+export async function fetchUiConfig(): Promise<UiConfig> {
+  const r = await fetch(apiUrl("ui-config"));
+  if (!r.ok) return DEFAULT_UI_CONFIG;
+  const value = (await r.json()) as Partial<UiConfig>;
+  return {
+    ...DEFAULT_UI_CONFIG,
+    ...value,
+    suggestions: Array.isArray(value.suggestions)
+      ? value.suggestions.filter((item): item is string => typeof item === "string")
+      : DEFAULT_UI_CONFIG.suggestions,
+  };
+}
+
+export async function fetchKnowledge(): Promise<KnowledgeIndex> {
+  const r = await fetch(apiUrl("knowledge"));
+  if (!r.ok) return { sources: [], tree: [] };
   const j = await r.json();
-  return j.sources ?? [];
+  const sources = Array.isArray(j.sources) ? j.sources : [];
+  return {
+    sources,
+    tree: Array.isArray(j.tree)
+      ? j.tree
+      : sources.map((path: string) => {
+          const parts = path.split("/");
+          return {
+            type: "file" as const,
+            name: parts[parts.length - 1] || path,
+            path,
+          };
+        }),
+  };
+}
+
+export async function uploadKnowledge(
+  files: File[],
+  directory: string,
+): Promise<KnowledgeUploadResult> {
+  const body = new FormData();
+  body.append("directory", directory.trim());
+  for (const file of files) body.append("files", file, file.name);
+
+  const response = await fetch(apiUrl("knowledge/upload"), {
+    method: "POST",
+    body,
+  });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`);
+  return value as KnowledgeUploadResult;
 }
 
 /** 读取某个知识库文档的原文。 */
 export async function fetchKnowledgeContent(source: string): Promise<string> {
-  const r = await fetch(`/api/knowledge/content?source=${encodeURIComponent(source)}`);
+  const url = new URL(apiUrl("knowledge/content"));
+  url.searchParams.set("source", source);
+  const r = await fetch(url);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
   return j.content ?? "";
@@ -120,7 +221,9 @@ export async function fetchKnowledgeContent(source: string): Promise<string> {
 
 /** 读取某个模板的内容。 */
 export async function fetchTemplateContent(name: string): Promise<string> {
-  const r = await fetch(`/api/templates/content?name=${encodeURIComponent(name)}`);
+  const url = new URL(apiUrl("templates/content"));
+  url.searchParams.set("name", name);
+  const r = await fetch(url);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
   return j.content ?? "";
@@ -161,7 +264,7 @@ export async function exportContent(
   title: string,
   diagrams: DiagramAsset[] = []
 ): Promise<void> {
-  const resp = await fetch("/api/export", {
+  const resp = await fetch(apiUrl("export"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, format, title, diagrams }),
@@ -176,7 +279,7 @@ export async function generateMarkdown(params: {
   useKnowledge: boolean;
   title: string;
 }): Promise<string> {
-  const resp = await fetch("/api/generate", {
+  const resp = await fetch(apiUrl("generate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

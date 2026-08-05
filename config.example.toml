@@ -3,13 +3,28 @@
 [server]
 host = "0.0.0.0"
 port = 8080
+# 对外访问子路径；空字符串表示根路径，也可配置为 "/documentx"。
+base_path = ""
 # 请求体大小上限（MB）。文档/长文本场景放大，避免被默认限制截断。
 max_body_mb = 16
+
+[ui]
+# 侧栏品牌与欢迎页文案；整段不配置时使用这些默认值。
+brand_title = "DocumentX"
+brand_subtitle = "文档智能体 · 小文"
+welcome_title = "嗨，我是小文 👋"
+welcome_description = "DocumentX 的文档助手。我会基于你的知识库回答，也能按模板产出可下载的 PDF / Word / Markdown。"
+suggestions = [
+  "总结一下知识库里的核心内容",
+  "按对外API文档模板生成一份文档",
+  "列出所有接口及其用途",
+  "解释其中的认证与鉴权流程",
+]
 
 [llm]
 # OpenAI Chat Completions 兼容端点（自带网关/第三方模型都可）。
 base_url = "https://api.openai.com/v1"
-api_key  = "sk-..."            # 建议用环境变量 LLM_API_KEY，不要提交到仓库
+api_key  = "sk-..."            # 建议用 DOCUMENTX_LLM_API_KEY，不要提交到仓库
 model    = "gpt-4o-mini"       # 对话默认模型
 # 文档生成可选用更强的模型；不填则复用上面的 model。
 # generate_model = "gpt-4o"
@@ -38,6 +53,31 @@ max_svg_kb = 1024
 max_png_kb = 8192
 
 [paths]
-knowledge_dir = "knowledge"      # 内部文档目录（知识库）
-templates_dir = "templates"      # 对外输出模板目录
+knowledge_dir = "knowledge"      # local 模式：内部文档目录
+templates_dir = "templates"      # local 模式：输出模板目录
 static_dir    = "frontend/dist"  # 前端构建产物
+# 开发配置故意不指向仓库根 AGENTS.md；它是维护指南，不是运行时提示。
+# agents_file = "deploy/AGENTS.md"
+
+[content]
+# local：从 [paths] 读取；s3：从下面配置的兼容 S3/OSS 桶读取。
+mode = "local"
+# 启动时必定全量加载；之后每隔 N 秒重新加载完整快照。0 表示关闭定时刷新。
+refresh_interval_secs = 300
+# AGENTS.md、知识文档、模板的单文件上限与合计数量上限。
+max_file_kb = 2048
+max_files = 10000
+
+[content.s3]
+# S3 兼容端点；AWS S3 可留空，MinIO/阿里云 OSS 等填写对应 endpoint。
+endpoint = ""
+region = "us-east-1"
+bucket = ""
+# 只配置一个根目录。固定读取：
+# documentx/AGENTS.md、documentx/knowledge/**、documentx/templates/**
+root_prefix = "documentx"
+# 兼容 MinIO 等服务时通常保持 true；需要虚拟主机风格时设为 false。
+force_path_style = true
+# 仅本地/内网 HTTP 测试时开启；生产环境建议始终使用 HTTPS。
+allow_http = false
+download_concurrency = 8

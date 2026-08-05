@@ -1,42 +1,69 @@
-use std::path::Path;
+use std::collections::{btree_map::Entry, BTreeMap};
 
-use walkdir::WalkDir;
+use anyhow::bail;
 
 /// 一个模板 = 一份指导性参考文档，整篇会被塞进 prompt 供模型参考。
 #[derive(Debug, Clone)]
 pub struct Template {
+    /// 相对于 templates/ 的路径（不含扩展名）；根目录旧模板名保持不变。
     pub name: String,
     pub content: String,
 }
 
-pub fn load_templates(dir: &str) -> anyhow::Result<Vec<Template>> {
-    let mut v = Vec::new();
-    if Path::new(dir).exists() {
-        for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-            if !entry.file_type().is_file() {
-                continue;
+pub fn from_documents(documents: &BTreeMap<String, String>) -> anyhow::Result<Vec<Template>> {
+    let mut templates = BTreeMap::new();
+    for (source, content) in documents {
+        let name = strip_extension(source);
+        match templates.entry(name.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(Template {
+                    name,
+                    content: content.clone(),
+                });
             }
-            let path = entry.path();
-            let is_doc = matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("md") | Some("markdown") | Some("txt")
-            );
-            if !is_doc {
-                continue;
+            Entry::Occupied(_) => {
+                bail!("模板名称冲突：{name}（不同扩展名会映射为同一个模板名）");
             }
-            let name = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let content = std::fs::read_to_string(path).unwrap_or_default();
-            v.push(Template { name, content });
         }
     }
-    v.sort_by(|a, b| a.name.cmp(&b.name));
-    tracing::info!("模板加载完成：{} 个（目录 {}）", v.len(), dir);
-    Ok(v)
+    Ok(templates.into_values().collect())
+}
+
+fn strip_extension(source: &str) -> String {
+    source
+        .rsplit_once('.')
+        .map(|(name, _)| name)
+        .unwrap_or(source)
+        .to_owned()
 }
 
 pub fn find<'a>(templates: &'a [Template], name: &str) -> Option<&'a Template> {
-    templates.iter().find(|t| t.name == name)
+    templates.iter().find(|template| template.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_template_names_preserve_their_relative_path() {
+        let templates = from_documents(&BTreeMap::from([
+            ("对外API文档.md".to_owned(), "root".to_owned()),
+            ("产品/发布说明.markdown".to_owned(), "nested".to_owned()),
+        ]))
+        .unwrap();
+
+        assert_eq!(templates[0].name, "产品/发布说明");
+        assert_eq!(templates[1].name, "对外API文档");
+    }
+
+    #[test]
+    fn duplicate_names_across_extensions_are_rejected() {
+        let error = from_documents(&BTreeMap::from([
+            ("API.md".to_owned(), "one".to_owned()),
+            ("API.txt".to_owned(), "two".to_owned()),
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("模板名称冲突"));
+    }
 }

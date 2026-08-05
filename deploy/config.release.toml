@@ -4,11 +4,24 @@
 [server]
 host = "0.0.0.0"
 port = 8080
+base_path = "/documentx"        # 页面与 API 统一挂载在此前缀下
 max_body_mb = 16
+
+[ui]
+brand_title = "DocumentX"
+brand_subtitle = "文档智能体 · 小文"
+welcome_title = "嗨，我是小文 👋"
+welcome_description = "DocumentX 的文档助手。我会基于你的知识库回答，也能按模板产出可下载的 PDF / Word / Markdown。"
+suggestions = [
+  "总结一下知识库里的核心内容",
+  "按对外API文档模板生成一份文档",
+  "列出所有接口及其用途",
+  "解释其中的认证与鉴权流程",
+]
 
 [llm]
 base_url = "https://api.openai.com/v1"
-api_key  = "sk-..."            # 生产环境建议用环境变量 LLM_API_KEY 注入，不要写死在文件里
+api_key  = "sk-..."            # 生产环境建议用 DOCUMENTX_LLM_API_KEY 注入，不要写死在文件里
 model    = "gpt-4o-mini"
 # generate_model = "gpt-4o"    # 文档生成可选用更强模型
 temperature = 0.3
@@ -28,7 +41,22 @@ max_svg_kb = 1024
 max_png_kb = 8192
 
 [paths]
-knowledge_dir = "knowledge"    # 知识库目录
-templates_dir = "templates"    # 模板目录
+knowledge_dir = "knowledge"    # local 模式：知识库目录
+templates_dir = "templates"    # local 模式：模板目录
 static_dir    = "web"          # 前端产物
 agents_file   = "AGENTS.md"    # 指导 documentx 行为的指令文件（作为系统提示加载）
+
+[content]
+mode = "local"                 # local 或 s3（环境变量也接受 oss）
+refresh_interval_secs = 300     # 启动全量加载；之后定时全量刷新，0 为关闭定时任务
+max_file_kb = 2048
+max_files = 10000
+
+[content.s3]
+endpoint = ""                  # AWS S3 留空；兼容 S3/OSS 填 endpoint
+region = "us-east-1"
+bucket = ""
+root_prefix = "documentx"      # 固定读取 AGENTS.md、knowledge/**、templates/**
+force_path_style = true
+allow_http = false              # 生产环境建议保持 false
+download_concurrency = 8

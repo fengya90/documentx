@@ -19,8 +19,10 @@
 # 知识库属于「运行时数据」，可能含内部/敏感文档，默认不入库；仅保留示例。
 # 想版本化某个文档，可显式 `git add -f knowledge/xxx.md`。
 /knowledge/*
-!/knowledge/示例-用户服务.md
-!/knowledge/documentx_diagram_guide.md
+!/knowledge/DocumentX/
+!/knowledge/DocumentX/documentx_diagram_guide.md
+!/knowledge/示例/
+!/knowledge/示例/示例-用户服务.md
 
 # 系统
 .DS_Store
