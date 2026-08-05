@@ -2,7 +2,7 @@
 
 一个以网页服务形式对外提供的文档智能体：
 
-- **对外**：网页问答，基于内部知识库回答；可把回答或按模板生成的文档导出为 **Markdown / PDF** 下载。
+- **对外**：网页问答，基于内部知识库回答；可把回答或按模板生成的文档导出为 **Markdown / PDF / Word** 下载。
 - **对内**：把文档丢进 `knowledge/` 就成为知识库；把参考范例丢进 `templates/` 就成为输出模板。
 
 ## 架构
@@ -14,7 +14,7 @@ backend/             后端（Rust + Axum）
     llm.rs           OpenAI Chat Completions 兼容客户端（流式 SSE）
     knowledge.rs     Retriever trait + 关键词检索（含中文 bigram）
     templates.rs     模板加载
-    render/          Markdown → Typst → PDF
+    render/          Markdown → PDF / Word；图表统一渲染
     api.rs           HTTP 路由 / 中间件
 knowledge/           ★ 内部文档（知识库）
 templates/           ★ 对外输出模板（每个是一份参考范例 .md）
@@ -28,8 +28,10 @@ LLM 走 **OpenAI Chat Completions 协议**，`base_url` / `api_key` / `model` �
 - Rust（stable）
 - Node.js 18+
 
-**无其它外部依赖。** PDF 导出使用**内嵌的 typst 库**，中文字体（Noto Sans SC）也已打包进二进制，
+PDF / Word 导出无外部运行服务。PDF 使用**内嵌的 typst 库**，中文字体（Noto Sans SC）已打包进二进制；Word 导出还会把该字体嵌入 DOCX，接收方无需安装中文字体。
 所以编译出的可执行文件零依赖，扔进任意 Linux 容器即可运行，无需安装 typst 或系统字体。
+
+Mermaid、Graphviz（WASM）、Vega / Vega-Lite 图表引擎随前端产物打包并按需加载，不请求 CDN 或图表服务。
 
 ## 配置
 
@@ -56,6 +58,30 @@ cargo run --release --manifest-path backend/Cargo.toml
 ```
 
 打开 http://localhost:8080
+
+支持在 Markdown fenced code block 中使用：
+
+- 首选：`mermaid`（流程、时序、状态、ER、类图、甘特图）
+- 依赖关系：`graphviz` 或 `dot`
+- 数据可视化：`vega`、`vegalite`
+
+同一个代码块会在网页中显示为 SVG；导出时浏览器在一次解析中同步生成有序占位正文、经过清洗的 SVG 和 2x PNG，后端校验占位顺序、源码哈希与资产安全后，分别嵌入 PDF 和 Word，避免前后端重复解析 Markdown 产生数量偏差。Markdown 下载仍保留原始图表源码。所有渲染均在本机浏览器完成，外部 URL、脚本、事件属性和远程 Vega 数据会被拒绝。
+
+示例：
+
+````markdown
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant D as DocumentX
+  participant B as 本机浏览器
+  U->>D: 导出 PDF / Word
+  D-->>B: 返回 Markdown
+  B->>B: 内置引擎渲染 SVG / PNG
+  B->>D: 提交图表资产与源码哈希
+  D-->>U: 带图文档
+```
+````
 
 ### 开发模式（前端热更新）
 
@@ -117,11 +143,13 @@ cd release && ./documentx     # 打开 http://localhost:8080
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/chat` | 流式对话（SSE），body: `{ messages, use_knowledge }` |
-| POST | `/api/generate` | 按模板+知识库生成文档并下载，body: `{ instruction, template, format, title, use_knowledge }` |
-| POST | `/api/export` | 把给定 Markdown 导出为 md/pdf，body: `{ content, format, title }` |
+| POST | `/api/generate` | 按模板+知识库生成并下载；网页端固定先请求 Markdown，再在本地渲染图表后调用 `/api/export` |
+| POST | `/api/export` | 把 Markdown 导出为 md/pdf/docx，body: `{ content, format, title, diagrams }` |
 | GET | `/api/templates` | 模板列表 |
 | GET | `/api/knowledge` | 知识库文档列表 |
 | GET | `/api/health` | 健康检查 |
+
+`diagrams` 是与文中受支持代码块按顺序对应的图表资产数组。每项包含 `kind`、`source`、`source_hash`、`svg`、`png_base64`；网页客户端会把代码块同步替换为内部有序占位符，后端校验占位顺序和 SHA-256，PDF 只使用 SVG，Word 只使用 PNG。直接调用 API 的客户端也可继续提交原始 fenced code block，后端会解析并严格匹配资产；不含图表时可省略该字段。服务端不会为图表发起网络请求。
 
 ## 后续可扩展
 

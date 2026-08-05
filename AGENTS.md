@@ -7,14 +7,15 @@
 
 DocumentX 是一个文档智能体，以网页服务形式对外提供：
 
-- **对外**：网页问答（基于内部知识库），可把回答或按模板生成的文档导出为 Markdown / PDF。
+- **对外**：网页问答（基于内部知识库），可把回答或按模板生成的文档导出为 Markdown / PDF / Word。
 - **对内**：`knowledge/` 放知识库文档，`templates/` 放输出模板（每个模板是一份指导性参考 `.md`）。
 
 ## 技术栈
 
 - **后端**：Rust + Axum（`backend/`）。LLM 走 **OpenAI Chat Completions 兼容协议**（`base_url`/`api_key`/`model` 可配置），流式用 SSE。
 - **前端**：Vite + React + TypeScript（`frontend/`）。
-- **PDF**：内嵌 **typst 库**（非 CLI），中文字体 Noto Sans SC 用 `include_bytes!` 打包进二进制，零外部依赖。
+- **PDF / Word**：内嵌 **typst 库**（非 CLI），中文字体 Noto Sans SC 用 `include_bytes!` 打包进二进制；PDF 直接使用，Word 会把混淆后的字体嵌入 DOCX。
+- **技术图表**：Mermaid / Graphviz / Vega(Lite) 引擎随前端按需加载；浏览器一次解析生成内部占位正文、SVG 与 PNG 资产，PDF 嵌入 SVG，Word 嵌入 PNG；后端校验占位顺序、源码哈希和资产安全，不访问图表外部服务。
 
 ## 目录结构
 
@@ -27,6 +28,7 @@ backend/src/
   templates.rs    模板加载
   render/
     mod.rs        Format(Markdown/Pdf) + render 入口
+    diagram.rs    图表识别、浏览器资产匹配与安全校验
     md2typst.rs   Markdown -> Typst 标记转换
     pdf.rs        内嵌 typst 编译成 PDF（字体在 backend/assets/fonts/）
   api.rs          路由、AppState、中间件、各 handler
@@ -58,7 +60,7 @@ cargo check --manifest-path backend/Cargo.toml
 
 - `POST /api/chat` — 流式对话（SSE）。body: `{ messages, use_knowledge }`
 - `POST /api/generate` — 按模板+知识库生成文档并下载。body: `{ instruction, template, format, title, use_knowledge }`
-- `POST /api/export` — 把给定 Markdown 导出为 md/pdf。body: `{ content, format, title }`
+- `POST /api/export` — 把给定 Markdown 导出为 md/pdf/docx。body: `{ content, format, title }`
 - `GET /api/templates` · `GET /api/knowledge` · `GET /api/health`
 
 ## 分析项目并写入知识库
@@ -81,14 +83,14 @@ cargo check --manifest-path backend/Cargo.toml
 3. **SSE 不能被压缩**：`api.rs` 的 CompressionLayer 用 `NotForContentType("text/event-stream")` 排除了流式响应。新增流式路由时别破坏这点，也别给流式路由套整体 `TimeoutLayer`（会掐断长回答）。
 4. **中文流式**：`llm.rs` 按字节缓冲、按 `\n` 切行再转字符串，避免多字节字符被 chunk 边界截断。改流式解析时保留这个策略。
 5. **typst 版本锁定**：`typst-as-lib` / `typst` / `typst-pdf` / `typst-layout` 版本需相互匹配（当前 0.16 / 0.15 系）。升级时四者一起动，并重新验证 PDF 渲染。
-6. **字体**：`backend/assets/fonts/NotoSansSC-Regular.otf`（family = "Noto Sans SC"）通过 `include_bytes!` 编入。换字体要同步改 `pdf.rs` 里的 `FONT_FAMILY`。
+6. **字体**：`backend/assets/fonts/NotoSansSC-Regular.otf`（family = "Noto Sans SC"）通过 `include_bytes!` 编入。换字体要同步改 `pdf.rs` 里的 `FONT_FAMILY`，并验证 `docx.rs` 的 OOXML 字体嵌入与混淆逻辑。
 7. **知识库/模板/指令为启动时加载**：改这些文件需重启服务。（热更新尚未实现，是已知的可扩展点。）
 8. **请求体上限**：由 `config.server.max_body_mb` 控制（默认 16MB），在 `api.rs` 用 `RequestBodyLimitLayer` 显式设置，覆盖 axum 默认的 2MB。
 
 ## 修改后请验证
 
 - `cargo check` 通过、无警告。
-- 若动了 `render/` 或字体：实际生成一份含中文的 PDF 并确认渲染正常（表格/代码块/中文都要看）。
+- 若动了 `render/` 或字体：实际生成含中文与图表的 PDF、Word，并逐页确认表格、代码块、中文和图片渲染正常。
 - 若动了 `frontend/`：`npm run build` 通过。
 - 提交信息用中文或英文均可，聚焦「做了什么、为什么」。
 

@@ -20,6 +20,13 @@ context_window_tokens = 128000 # 模型上下文窗口（按你的模型改）
 max_response_tokens = 4096     # 为回答预留的 token
 enable_compaction = true       # 历史超预算时用 LLM 摘要压缩较早对话
 
+[diagrams]
+enabled = true
+max_source_kb = 256
+max_diagrams_per_document = 32
+max_svg_kb = 1024
+max_png_kb = 8192
+
 [paths]
 knowledge_dir = "knowledge"    # 知识库目录
 templates_dir = "templates"    # 模板目录

@@ -117,6 +117,13 @@ button {
   box-shadow: var(--shadow-sm);
   flex: 0 0 auto;
 }
+.assistant-avatar {
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: center;
+  user-select: none;
+}
 .brand-txt {
   flex: 1;
   min-width: 0;
@@ -431,6 +438,68 @@ button {
   word-break: break-word;
 }
 
+/* 图表：浏览器本地渲染；白色画布保证网页、PDF 和 Word 视觉一致。 */
+.diagram-block {
+  margin: 18px 0;
+  padding: 18px;
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.diagram-block img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 680px;
+}
+.diagram-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #6b7280;
+  font-size: 13px;
+}
+.diagram-loading span {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #d7dbe4;
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: diagram-spin 0.8s linear infinite;
+}
+@keyframes diagram-spin {
+  to { transform: rotate(360deg); }
+}
+.diagram-error {
+  width: 100%;
+  display: grid;
+  gap: 7px;
+  color: #991b1b;
+  text-align: left;
+}
+.diagram-error strong {
+  font-size: 13px;
+}
+.diagram-error span {
+  color: #7f1d1d;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diagram-error button {
+  justify-self: start;
+  margin-top: 2px;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  padding: 5px 10px;
+  color: #991b1b;
+  background: #fff7f7;
+}
+
 /* 打字指示 + 光标 */
 .typing {
   display: inline-flex;
@@ -708,6 +777,7 @@ button {
   line-height: 1.6;
   padding: 8px 0;
   max-height: 200px;
+  overflow-y: hidden;
 }
 .send {
   flex: 0 0 auto;
@@ -795,6 +865,8 @@ button {
 }
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   flex: 0 0 auto;
 }
@@ -841,5 +913,13 @@ button {
   .composer-wrap {
     padding-left: 12px;
     padding-right: 12px;
+  }
+  .modal-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .modal-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }

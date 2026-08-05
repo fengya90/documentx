@@ -1,6 +1,9 @@
+pub mod diagram;
 mod docx;
 mod md2typst;
 mod pdf;
+
+use crate::config::Diagrams;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Format {
@@ -27,7 +30,13 @@ pub struct Rendered {
 }
 
 /// 把 Markdown 内容渲染为指定格式的可下载文件。
-pub fn render(content: &str, title: &str, format: Format) -> anyhow::Result<Rendered> {
+pub fn render(
+    content: &str,
+    title: &str,
+    format: Format,
+    diagrams: &Diagrams,
+    diagram_assets: &[diagram::ProvidedDiagram],
+) -> anyhow::Result<Rendered> {
     let content = unwrap_outer_fence(content);
     let content = content.as_str();
     match format {
@@ -37,7 +46,7 @@ pub fn render(content: &str, title: &str, format: Format) -> anyhow::Result<Rend
             filename: "document.md".into(),
         }),
         Format::Pdf => {
-            let bytes = pdf::render_pdf(content, title)?;
+            let bytes = pdf::render_pdf(content, title, diagrams, diagram_assets)?;
             Ok(Rendered {
                 bytes,
                 content_type: "application/pdf".into(),
@@ -45,7 +54,7 @@ pub fn render(content: &str, title: &str, format: Format) -> anyhow::Result<Rend
             })
         }
         Format::Docx => {
-            let bytes = docx::render_docx(content, title)?;
+            let bytes = docx::render_docx(content, title, diagrams, diagram_assets)?;
             Ok(Rendered {
                 bytes,
                 content_type:

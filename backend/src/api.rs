@@ -34,9 +34,11 @@ use crate::{
     templates::{self, Template},
 };
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "你是一个文档智能体。你基于内部知识库回答问题，并能按要求产出规范的文档。\
+pub const DEFAULT_SYSTEM_PROMPT: &str =
+    "你是一个文档智能体。你基于内部知识库回答问题，并能按要求产出规范的文档。\
 回答使用简洁、专业的中文，结构清晰，优先使用 Markdown 组织内容（标题、列表、表格、代码块）。\
-当提供了「知识库参考」时，以其为事实依据，不要编造；若参考中没有答案，如实说明。";
+当提供了「知识库参考」时，以其为事实依据，不要编造；若参考中没有答案，如实说明。\
+技术文档确有助于理解时，可使用 mermaid、graphviz、vega 或 vegalite fenced code block；不要引用外部 URL 或文件。";
 
 /// 加载指导 documentx 行为的指令文件（如 AGENTS.md）作为系统提示；
 /// 未配置或文件为空则回退到内置默认提示。
@@ -87,13 +89,16 @@ pub fn build_router(state: AppState) -> Router {
     let api = streaming
         .merge(blocking)
         .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(cfg.server.max_body_mb * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(
+            cfg.server.max_body_mb * 1024 * 1024,
+        ))
         .with_state(state);
 
     // 压缩：br/gzip，但对 SSE（text/event-stream）关闭，且仅压缩 >1KB 的响应。
-    let compression = CompressionLayer::new().br(true).gzip(true).compress_when(
-        SizeAbove::new(1024).and(NotForContentType::const_new("text/event-stream")),
-    );
+    let compression = CompressionLayer::new()
+        .br(true)
+        .gzip(true)
+        .compress_when(SizeAbove::new(1024).and(NotForContentType::const_new("text/event-stream")));
 
     let index = format!("{}/index.html", cfg.paths.static_dir);
     let serve_dir = ServeDir::new(&cfg.paths.static_dir).not_found_service(ServeFile::new(index));
@@ -132,7 +137,11 @@ async fn knowledge_content(
     Query(q): Query<SourceQuery>,
 ) -> Result<Response, AppError> {
     if !st.retriever.sources().iter().any(|s| s == &q.source) {
-        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "未找到该文档" }))).into_response());
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "未找到该文档" })),
+        )
+            .into_response());
     }
     let path = std::path::Path::new(&st.config.paths.knowledge_dir).join(&q.source);
     let content = std::fs::read_to_string(&path)
@@ -152,9 +161,11 @@ async fn template_content(
 ) -> Result<Response, AppError> {
     match templates::find(&st.templates, &q.name) {
         Some(t) => Ok(Json(json!({ "name": t.name, "content": t.content })).into_response()),
-        None => {
-            Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "未找到该模板" }))).into_response())
-        }
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "未找到该模板" })),
+        )
+            .into_response()),
     }
 }
 
@@ -422,12 +433,22 @@ async fn generate(
 （代码块只用于文档内部真正的代码/JSON 片段）。",
     );
 
-    let messages = vec![Message::system(system), Message::user(req.instruction.clone())];
+    let messages = vec![
+        Message::system(system),
+        Message::user(req.instruction.clone()),
+    ];
     let content = st.llm.chat_once(messages).await?.content;
 
     let title = req.title.unwrap_or_else(|| "文档".into());
     let format = Format::parse(&req.format);
-    file_response(content, title, format).await
+    file_response(
+        content,
+        title,
+        format,
+        st.config.diagrams.clone(),
+        Vec::new(),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -437,18 +458,38 @@ struct ExportReq {
     format: String,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    diagrams: Vec<render::diagram::ProvidedDiagram>,
 }
 
-async fn export(Json(req): Json<ExportReq>) -> Result<Response, AppError> {
+async fn export(
+    State(st): State<AppState>,
+    Json(req): Json<ExportReq>,
+) -> Result<Response, AppError> {
     let title = req.title.unwrap_or_else(|| "文档".into());
     let format = Format::parse(&req.format);
-    file_response(req.content, title, format).await
+    file_response(
+        req.content,
+        title,
+        format,
+        st.config.diagrams.clone(),
+        req.diagrams,
+    )
+    .await
 }
 
 /// 在阻塞线程里渲染（typst 是外部进程），再包成下载响应。
-async fn file_response(content: String, title: String, format: Format) -> Result<Response, AppError> {
-    let rendered =
-        tokio::task::spawn_blocking(move || render::render(&content, &title, format)).await??;
+async fn file_response(
+    content: String,
+    title: String,
+    format: Format,
+    diagrams: crate::config::Diagrams,
+    diagram_assets: Vec<render::diagram::ProvidedDiagram>,
+) -> Result<Response, AppError> {
+    let rendered = tokio::task::spawn_blocking(move || {
+        render::render(&content, &title, format, &diagrams, &diagram_assets)
+    })
+    .await??;
 
     let disposition = format!("attachment; filename=\"{}\"", rendered.filename);
     let headers = [

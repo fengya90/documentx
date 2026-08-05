@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import xiaowenAvatar from "./assets/xiaowen-avatar.png";
 import {
   ChatMessage,
   streamChat,
@@ -9,8 +11,9 @@ import {
   fetchKnowledgeContent,
   fetchTemplateContent,
   exportContent,
-  generateDocument,
+  generateMarkdown,
 } from "./api";
+import { normalizeDiagramKind, prepareDiagramExport, renderDiagramSvg } from "./diagrams";
 
 type Viewer = { title: string; kind: "知识库" | "模板"; content: string };
 type Theme = "light" | "dark";
@@ -53,51 +56,18 @@ const Icon = {
   ),
 };
 
-/** 智能体吉祥物「小文」：一个可爱的紫发女孩（纯 SVG，矢量、随主题缩放）。 */
-function Mascot({ size = 32 }: { size?: number }) {
+/** 智能体「小文」的真人头像，在侧栏、欢迎页和消息区复用。 */
+function AssistantAvatar({ size = 32 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden>
-      <defs>
-        <linearGradient id="mx-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#efe9ff" />
-          <stop offset="1" stopColor="#e2d6ff" />
-        </linearGradient>
-        <linearGradient id="mx-hair" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#8f7dff" />
-          <stop offset="1" stopColor="#6a54e8" />
-        </linearGradient>
-      </defs>
-      <circle cx="32" cy="32" r="32" fill="url(#mx-bg)" />
-      {/* 后发 */}
-      <ellipse cx="32" cy="31" rx="20.5" ry="21" fill="url(#mx-hair)" />
-      {/* 两侧发绺 */}
-      <path d="M12.5 30 q-2 12 3.5 20 q3.2 -3 3 -9.5 q-4.5 -5.5 -3.2 -11.5 z" fill="url(#mx-hair)" />
-      <path d="M51.5 30 q2 12 -3.5 20 q-3.2 -3 -3 -9.5 q4.5 -5.5 3.2 -11.5 z" fill="url(#mx-hair)" />
-      {/* 脸 */}
-      <ellipse cx="32" cy="35" rx="14.5" ry="14" fill="#ffe3d2" />
-      {/* 腮红 */}
-      <ellipse cx="22.5" cy="39.5" rx="3.2" ry="1.9" fill="#ff9db3" opacity="0.6" />
-      <ellipse cx="41.5" cy="39.5" rx="3.2" ry="1.9" fill="#ff9db3" opacity="0.6" />
-      {/* 刘海 */}
-      <path
-        d="M17 33 C17 22 23 17.5 32 17.5 C41 17.5 47 22 47 33 C44 27.5 40 27 37 30.2 C35 26 30 26 27.5 30.2 C24 27 20 27.5 17 33 Z"
-        fill="url(#mx-hair)"
-      />
-      {/* 呆毛 */}
-      <path d="M31 12 C30 6.5 36.5 5 39.5 8.2 C36.5 8.2 34 10.5 34.6 14.2 Z" fill="url(#mx-hair)" />
-      {/* 眼睛 */}
-      <ellipse cx="26" cy="35.6" rx="2.7" ry="3.6" fill="#3b3557" />
-      <ellipse cx="38" cy="35.6" rx="2.7" ry="3.6" fill="#3b3557" />
-      <circle cx="27" cy="34.2" r="1.05" fill="#fff" />
-      <circle cx="39" cy="34.2" r="1.05" fill="#fff" />
-      {/* 微笑 */}
-      <path d="M28.8 41.4 Q32 44.6 35.2 41.4" stroke="#e0728a" strokeWidth="1.7" fill="none" strokeLinecap="round" />
-      {/* 发夹（小星星） */}
-      <path
-        d="M20.8 20.4 l0.9 1.95 2.15 0.2 -1.62 1.44 0.5 2.05 -1.93 -1.08 -1.93 1.08 0.5 -2.05 -1.62 -1.44 2.15 -0.2 z"
-        fill="#ffd166"
-      />
-    </svg>
+    <img
+      className="assistant-avatar"
+      src={xiaowenAvatar}
+      width={size}
+      height={size}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+    />
   );
 }
 
@@ -117,6 +87,78 @@ function stripPreamble(md: string): string {
   return idx > 0 ? lines.slice(idx).join("\n") : md;
 }
 
+function codeLanguage(className?: string): string | null {
+  const match = className?.match(/(?:^|\s)language-([^\s]+)/);
+  const language = match?.[1] ?? "";
+  return normalizeDiagramKind(language);
+}
+
+const DiagramBlock = memo(function DiagramBlock({ kind, source }: { kind: string; source: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    setUrl(null);
+    const timer = window.setTimeout(() => {
+      setError(null);
+      renderDiagramSvg(kind, source)
+        .then((svg) => {
+          if (!active) return;
+          objectUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+          setUrl(objectUrl);
+        })
+        .catch((reason) => {
+          if (reason?.name !== "AbortError") {
+            setError(reason?.message ?? String(reason));
+          }
+        });
+    }, 180);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [kind, source, attempt]);
+
+  return (
+    <figure className="diagram-block" aria-label={`${kind} 图表`}>
+      {url ? <img src={url} alt={`${kind} 图表`} /> : error ? (
+        <div className="diagram-error">
+          <strong>{kind} 图表渲染失败</strong>
+          <span>{error}</span>
+          <button type="button" onClick={() => setAttempt((value) => value + 1)}>重试</button>
+        </div>
+      ) : (
+        <div className="diagram-loading"><span />正在渲染 {kind} 图表…</div>
+      )}
+    </figure>
+  );
+});
+
+function MarkdownPre({ children }: { children?: ReactNode }) {
+  if (isValidElement(children)) {
+    const props = children.props as { className?: string; children?: ReactNode };
+    const kind = codeLanguage(props.className);
+    if (kind) {
+      const source = String(props.children ?? "").replace(/\n$/, "");
+      return <DiagramBlock kind={kind} source={source} />;
+    }
+  }
+  return <pre>{children}</pre>;
+}
+
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: MarkdownPre }}>
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -133,6 +175,7 @@ export default function App() {
 
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [viewerRaw, setViewerRaw] = useState(false);
+  const [exporting, setExporting] = useState<"pdf" | "docx" | null>(null);
 
   const [genOpen, setGenOpen] = useState(false);
   const [genInstruction, setGenInstruction] = useState("");
@@ -163,7 +206,9 @@ export default function App() {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    const nextHeight = Math.min(el.scrollHeight, 200);
+    el.style.height = nextHeight + "px";
+    el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
   }, [input]);
 
   useEffect(() => {
@@ -275,11 +320,23 @@ export default function App() {
   }
 
   async function exportMessage(content: string, format: "md" | "pdf" | "docx") {
+    if (exporting) return;
+    if (format !== "md") {
+      setExporting(format);
+      flash(`正在本地渲染图表并导出 ${format === "pdf" ? "PDF" : "Word"}…`);
+    }
     try {
       const doc = stripPreamble(content);
-      await exportContent(doc, format, deriveTitle(doc));
+      if (format === "md") {
+        await exportContent(doc, format, deriveTitle(doc));
+      } else {
+        const prepared = await prepareDiagramExport(doc);
+        await exportContent(prepared.content, format, deriveTitle(doc), prepared.diagrams);
+      }
     } catch (e: any) {
       flash(`导出失败：${e.message ?? e}`);
+    } finally {
+      if (format !== "md") setExporting(null);
     }
   }
 
@@ -290,13 +347,23 @@ export default function App() {
     }
     setGenBusy(true);
     try {
-      await generateDocument({
+      const content = await generateMarkdown({
         instruction: genInstruction,
         template: genTemplate || null,
-        format,
         useKnowledge,
         title: genTitle || "文档",
       });
+      if (format === "md") {
+        await exportContent(content, format, genTitle || deriveTitle(content));
+      } else {
+        const prepared = await prepareDiagramExport(content);
+        await exportContent(
+          prepared.content,
+          format,
+          genTitle || deriveTitle(content),
+          prepared.diagrams
+        );
+      }
     } catch (e: any) {
       flash(`生成失败：${e.message ?? e}`);
     }
@@ -309,7 +376,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="logo">
-            <Mascot size={38} />
+            <AssistantAvatar size={38} />
           </span>
           <div className="brand-txt">
             <h1>DocumentX</h1>
@@ -405,7 +472,7 @@ export default function App() {
           <div className="thread">
             {messages.length === 0 ? (
               <div className="empty">
-                <div className="empty-badge"><Mascot size={84} /></div>
+                <div className="empty-badge"><AssistantAvatar size={84} /></div>
                 <h2>嗨，我是小文 👋</h2>
                 <p>DocumentX 的文档助手。我会基于你的知识库回答，也能按模板产出可下载的 PDF / Word / Markdown。</p>
                 <div className="chips">
@@ -420,13 +487,13 @@ export default function App() {
                 const showActions = m.role === "assistant" && !!m.content && !streaming;
                 return (
                   <div key={i} className={`msg ${m.role}`}>
-                    <div className="avatar">{m.role === "user" ? "你" : <Mascot size={32} />}</div>
+                    <div className="avatar">{m.role === "user" ? "你" : <AssistantAvatar size={32} />}</div>
                     <div className="col">
                       <div className="bubble">
                         {m.role === "assistant" ? (
                           m.content ? (
                             <div className="prose">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                              <MarkdownContent content={m.content} />
                               {streaming && <span className="caret" />}
                             </div>
                           ) : (
@@ -500,6 +567,12 @@ export default function App() {
               </div>
               <div className="modal-actions">
                 <button className="btn small" onClick={() => copyMessage(viewer.content)}>复制</button>
+                <button className="btn small" disabled={exporting !== null} onClick={() => exportMessage(viewer.content, "pdf")}>
+                  {exporting === "pdf" ? "导出中…" : "PDF"}
+                </button>
+                <button className="btn small" disabled={exporting !== null} onClick={() => exportMessage(viewer.content, "docx")}>
+                  {exporting === "docx" ? "导出中…" : "Word"}
+                </button>
                 <button className="btn small" onClick={() => setViewerRaw((v) => !v)}>
                   {viewerRaw ? "渲染" : "原文"}
                 </button>
@@ -511,7 +584,7 @@ export default function App() {
                 <pre className="raw">{viewer.content}</pre>
               ) : (
                 <div className="prose">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{viewer.content}</ReactMarkdown>
+                  <MarkdownContent content={viewer.content} />
                 </div>
               )}
             </div>

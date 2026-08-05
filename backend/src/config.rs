@@ -10,6 +10,23 @@ pub struct Config {
     pub llm: Llm,
     #[serde(default)]
     pub paths: Paths,
+    #[serde(default)]
+    pub diagrams: Diagrams,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Diagrams {
+    /// 是否允许渲染 Markdown 图表代码块。
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default = "d_diagram_max_source_kb")]
+    pub max_source_kb: usize,
+    #[serde(default = "d_diagram_max_count")]
+    pub max_diagrams_per_document: usize,
+    #[serde(default = "d_diagram_max_svg_kb")]
+    pub max_svg_kb: usize,
+    #[serde(default = "d_diagram_max_png_kb")]
+    pub max_png_kb: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +116,10 @@ impl Config {
                 cfg.server.port = p;
             }
         }
+        if let Ok(v) = env::var("DIAGRAMS_ENABLED") {
+            cfg.diagrams.enabled =
+                matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
+        }
 
         // 归一化 base_url：去掉末尾斜杠。
         while cfg.llm.base_url.ends_with('/') {
@@ -156,6 +177,18 @@ fn d_templates_dir() -> String {
 fn d_static_dir() -> String {
     "frontend/dist".into()
 }
+fn d_diagram_max_source_kb() -> usize {
+    256
+}
+fn d_diagram_max_count() -> usize {
+    32
+}
+fn d_diagram_max_svg_kb() -> usize {
+    1024
+}
+fn d_diagram_max_png_kb() -> usize {
+    8192
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -163,6 +196,18 @@ impl Default for Config {
             server: Server::default(),
             llm: Llm::default(),
             paths: Paths::default(),
+            diagrams: Diagrams::default(),
+        }
+    }
+}
+impl Default for Diagrams {
+    fn default() -> Self {
+        Diagrams {
+            enabled: true,
+            max_source_kb: d_diagram_max_source_kb(),
+            max_diagrams_per_document: d_diagram_max_count(),
+            max_svg_kb: d_diagram_max_svg_kb(),
+            max_png_kb: d_diagram_max_png_kb(),
         }
     }
 }

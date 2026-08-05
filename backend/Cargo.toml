@@ -38,6 +38,9 @@ typst = "0.15"
 typst-layout = "0.15"
 docx-rs = "0.4.22"
 rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 
 [profile.release]
 opt-level = 3

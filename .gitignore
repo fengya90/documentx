@@ -20,6 +20,7 @@
 # 想版本化某个文档，可显式 `git add -f knowledge/xxx.md`。
 /knowledge/*
 !/knowledge/示例-用户服务.md
+!/knowledge/documentx_diagram_guide.md
 
 # 系统
 .DS_Store

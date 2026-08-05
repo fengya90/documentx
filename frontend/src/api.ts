@@ -1,3 +1,5 @@
+import type { DiagramAsset } from "./diagrams";
+
 export type Role = "user" | "assistant";
 
 export interface ChatMessage {
@@ -156,34 +158,44 @@ export type ExportFormat = "md" | "pdf" | "docx";
 export async function exportContent(
   content: string,
   format: ExportFormat,
-  title: string
+  title: string,
+  diagrams: DiagramAsset[] = []
 ): Promise<void> {
   const resp = await fetch("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, format, title }),
+    body: JSON.stringify({ content, format, title, diagrams }),
   });
   await download(resp, `document.${format}`);
 }
 
-/** 依据模板 + 知识库生成文档并下载。 */
-export async function generateDocument(params: {
+/** 依据模板 + 知识库生成 Markdown；浏览器随后渲染图表并按目标格式导出。 */
+export async function generateMarkdown(params: {
   instruction: string;
   template: string | null;
-  format: ExportFormat;
   useKnowledge: boolean;
   title: string;
-}): Promise<void> {
+}): Promise<string> {
   const resp = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       instruction: params.instruction,
       template: params.template,
-      format: params.format,
+      format: "md",
       use_knowledge: params.useKnowledge,
       title: params.title,
     }),
   });
-  await download(resp, `document.${params.format}`);
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json();
+      if (body.error) message = body.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return resp.text();
 }

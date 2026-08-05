@@ -3,7 +3,9 @@ use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
 
+use super::diagram::{self, OutputFormat, ProvidedDiagram};
 use super::md2typst;
+use crate::config::Diagrams;
 
 /// 内嵌到二进制里的中文字体（Noto Sans SC，覆盖中文 + 拉丁 + 数字）。
 /// 这样导出 PDF 无需系统安装任何字体或 typst 命令，换任意机器都能跑。
@@ -13,9 +15,22 @@ static FONT_JETBRAINS_MONO: &[u8] = include_bytes!("../../assets/fonts/JetBrains
 const FONT_FAMILY: &str = "Noto Sans SC";
 
 /// 用内嵌的 typst 库把 Markdown 渲染成 PDF（零外部依赖）。
-pub fn render_pdf(md: &str, title: &str) -> anyhow::Result<Vec<u8>> {
-    let body = md2typst::convert(md);
+pub fn render_pdf(
+    md: &str,
+    title: &str,
+    config: &Diagrams,
+    assets: &[ProvidedDiagram],
+) -> anyhow::Result<Vec<u8>> {
+    let prepared = diagram::prepare(md, assets, OutputFormat::Svg, config)?;
+    let body = md2typst::convert(&prepared.markdown);
     let source = wrap_document(title, &body);
+
+    let static_files: Vec<(String, Vec<u8>)> = prepared
+        .diagrams
+        .iter()
+        .enumerate()
+        .map(|(index, asset)| (format!("diagram-{index}.svg"), asset.bytes.clone()))
+        .collect();
 
     let engine = TypstEngine::builder()
         .main_file(source)
@@ -24,6 +39,11 @@ pub fn render_pdf(md: &str, title: &str) -> anyhow::Result<Vec<u8>> {
             FONT_NOTO_SANS_SC_BOLD,
             FONT_JETBRAINS_MONO,
         ])
+        .with_static_file_resolver(
+            static_files
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice())),
+        )
         .build();
 
     let doc: PagedDocument = engine
@@ -31,8 +51,8 @@ pub fn render_pdf(md: &str, title: &str) -> anyhow::Result<Vec<u8>> {
         .output
         .map_err(|e| anyhow!("typst 编译失败：{e:?}"))?;
 
-    let pdf = typst_pdf::pdf(&doc, &PdfOptions::default())
-        .map_err(|e| anyhow!("PDF 生成失败：{e:?}"))?;
+    let pdf =
+        typst_pdf::pdf(&doc, &PdfOptions::default()).map_err(|e| anyhow!("PDF 生成失败：{e:?}"))?;
     Ok(pdf)
 }
 

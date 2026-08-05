@@ -29,6 +29,14 @@ max_response_tokens = 4096
 # 历史超预算时是否用 LLM 摘要压缩较早对话（false 则直接丢弃最老的）。
 enable_compaction = true
 
+[diagrams]
+# 图表由浏览器内置引擎渲染，不访问外部服务。
+enabled = true
+max_source_kb = 256
+max_diagrams_per_document = 32
+max_svg_kb = 1024
+max_png_kb = 8192
+
 [paths]
 knowledge_dir = "knowledge"      # 内部文档目录（知识库）
 templates_dir = "templates"      # 对外输出模板目录

@@ -2,6 +2,8 @@
 //! Typst 语法与 Markdown 相近（标题 =、列表 - / +、代码块 ```），
 //! 因此这里做的是逐行/逐 token 的映射与转义。
 
+use super::diagram;
+
 /// 转换整篇 Markdown 为 Typst body。
 pub fn convert(md: &str) -> String {
     let lines: Vec<&str> = md.lines().collect();
@@ -10,6 +12,14 @@ pub fn convert(md: &str) -> String {
     while i < lines.len() {
         let raw = lines[i];
         let t = raw.trim_start();
+
+        if let Some(index) = diagram::marker_index(t) {
+            out.push_str(&format!(
+                "#figure(image(\"diagram-{index}.svg\", width: 100%, fit: \"contain\"))\n\n"
+            ));
+            i += 1;
+            continue;
+        }
 
         // 代码块（围栏）
         if let Some(rest) = t.strip_prefix("```") {
@@ -79,7 +89,10 @@ pub fn convert(md: &str) -> String {
                 if !lt.starts_with('>') {
                     break;
                 }
-                let q = lt.strip_prefix("> ").or_else(|| lt.strip_prefix(">")).unwrap_or("");
+                let q = lt
+                    .strip_prefix("> ")
+                    .or_else(|| lt.strip_prefix(">"))
+                    .unwrap_or("");
                 parts.push(inline(q.trim()));
                 i += 1;
             }
@@ -197,7 +210,11 @@ fn inline(s: &str) -> String {
 
         if rest.starts_with('[') {
             if let Some((text, url, next)) = parse_link(s, i) {
-                out.push_str(&format!("#link(\"{}\")[{}]", escape_str(&url), inline(&text)));
+                out.push_str(&format!(
+                    "#link(\"{}\")[{}]",
+                    escape_str(&url),
+                    inline(&text)
+                ));
                 i = next;
                 continue;
             }
